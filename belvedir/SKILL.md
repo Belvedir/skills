@@ -31,6 +31,8 @@ Three rules make instrumentation reliable:
 2. **Next.js: initialize from `instrumentation.ts` and pass your LLM SDKs via `instrumentModules`.** Bundlers can inline or ESM-load LLM SDKs in ways auto-instrumentation can't see; LLM spans then vanish silently while HTTP spans still arrive. Also keep the SDKs external so every bundle shares one runtime copy: `serverExternalPackages: ["openai", "@anthropic-ai/sdk", "belvedir"]` in `next.config` on Next 15+ (`experimental.serverComponentsExternalPackages` on 13/14; the wrong key for your version is silently ignored). List `belvedir` itself too: a route or server action that bundles its own copy calls `withSession()`/`flush()` on an uninitialized duplicate, so flush silently no-ops and spans drop on serverless.
 3. **Edge runtime silently skips init**: any route making LLM calls needs `export const runtime = "nodejs"`.
 
+If the app calls an OpenAI-compatible endpoint with raw `fetch` instead of the `openai`/`@anthropic-ai/sdk` clients (common in agent frameworks with their own HTTP layer), `belvedir@0.4.0+` captures those calls automatically — streamed responses included — so `instrumentModules` is only needed for the client SDKs the app actually imports. Do not rewrite raw-fetch LLM calls to use a client SDK just for tracing.
+
 ```ts
 // instrumentation.ts  (project root, or src/instrumentation.ts)
 export async function register() {
@@ -108,7 +110,7 @@ await reportOutcome(sessionId, orderShipped ? "success" : "fail");
 pip install belvedir
 ```
 
-Call `initialize()` once at process startup, before the agent makes LLM calls. There is no `instrumentModules` equivalent: Python has no bundler, so auto-instrumentation always sees the installed `anthropic`/`openai`/LangChain/etc. packages.
+Call `initialize()` once at process startup, before the agent makes LLM calls. There is no `instrumentModules` equivalent: Python has no bundler, so auto-instrumentation always sees the installed `anthropic`/`openai`/LangChain/etc. packages. Raw `requests`/`httpx` calls to OpenAI-compatible endpoints are captured automatically on `belvedir>=0.6.0` (streamed responses included) — don't rewrite them to a client SDK just for tracing.
 
 ```python
 import os
