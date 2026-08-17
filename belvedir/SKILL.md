@@ -133,16 +133,19 @@ Both context managers propagate across `await` boundaries, so they work inside `
 
 ## Route inference through Belvedir
 
-Belvedir can also EXECUTE the app's LLM calls: point any OpenAI-compatible client at the router endpoint and swap the provider key for the Belvedir key. Two lines change; the client is used exactly as before. Every project starts with a production router (editable on the platform's Routing page), so Belvedir picks the model per request — including the project's fine-tuned models — runs the call, and bills the organization at cost. The `model` field works two ways. `model: "auto"` (or omitting it): the production router decides. Naming a real model (say `x-ai/grok-4.6`): the call goes through a router anchored on that model, created on first use — the named model is the ceiling (Big) and the project's cheaper Medium/Small tiers serve the easier calls underneath it. So existing code that names Grok in one place and Fable in another keeps working and ends up with a router per model, each editable on the Routing page. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards an explicit `model` as-is (a plain metered proxy).
+Belvedir also EXECUTES the app's LLM calls. Do this for EVERY LLM client in the codebase: keep the client, keep the model each call site already names, and change only the endpoint and the key — base URL to Belvedir's router, provider key to the Belvedir key. If the app called `x-ai/grok-4.6` through OpenRouter, it now calls `x-ai/grok-4.6` through Belvedir; if another file called `anthropic/claude-fable-5`, that one keeps Fable. Do NOT rewrite model names to `"auto"` and do NOT consolidate different call sites onto one model. Any OpenAI-compatible client works (openai SDK, Vercel AI SDK's OpenAI-compatible provider, raw fetch to `/chat/completions`); for a provider-native client (Anthropic SDK, xAI SDK) swap it for the OpenAI client pointed at Belvedir with the same model id.
+
+What happens next: the first call naming a model creates a router anchored on it (Routing page, "From your code") with that model as the ceiling and the project's cheaper Medium/Small tiers serving the easier calls underneath, so the app runs on the models it chose but pays less when a smaller model is enough. Every project also has a production router; `model: "auto"` hands a call to it outright, which is the opt-in path, not the migration. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards a named `model` as-is (a plain metered proxy).
 
 ```ts
+// Before: new OpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey: process.env.OPENROUTER_API_KEY })
 const client = new openai.OpenAI({
   baseURL: "https://platform.belvedir.ai/api/v1/route",
-  apiKey: process.env.BELVEDIR_API_KEY, // was OPENAI_API_KEY
+  apiKey: process.env.BELVEDIR_API_KEY, // was OPENROUTER_API_KEY / OPENAI_API_KEY
 });
 
 const res = await client.chat.completions.create({
-  model: "auto", // production router picks; a real model id = ceiling for the call
+  model: "x-ai/grok-4.6", // unchanged: the model this call site already used
   messages,
 });
 ```
@@ -150,8 +153,9 @@ const res = await client.chat.completions.create({
 ```python
 client = OpenAI(
     base_url="https://platform.belvedir.ai/api/v1/route",
-    api_key=os.environ["BELVEDIR_API_KEY"],  # was OPENAI_API_KEY
+    api_key=os.environ["BELVEDIR_API_KEY"],  # was OPENROUTER_API_KEY / OPENAI_API_KEY
 )
+res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  # model unchanged
 ```
 
 - Pass the session id in an `x-session-id` header (or a `session_id` body field) to pin a conversation to one model.
