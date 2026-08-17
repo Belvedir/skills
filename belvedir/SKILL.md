@@ -133,7 +133,7 @@ Both context managers propagate across `await` boundaries, so they work inside `
 
 ## Route inference through Belvedir
 
-Belvedir can also EXECUTE the app's LLM calls: point any OpenAI-compatible client at the router endpoint and swap the provider key for the Belvedir key. Two lines change; the client is used exactly as before. Once the project has a router configured (the platform's Routing page), Belvedir picks the model per request — including the project's fine-tuned models — runs the call, and bills the organization at cost. Until a router is configured, the endpoint is a plain metered proxy that honors the `model` you pass, so this swap is safe to ship first.
+Belvedir can also EXECUTE the app's LLM calls: point any OpenAI-compatible client at the router endpoint and swap the provider key for the Belvedir key. Two lines change; the client is used exactly as before. Every project starts with a router (editable on the platform's Routing page), so Belvedir picks the model per request — including the project's fine-tuned models — runs the call, and bills the organization at cost. Pass `model: "auto"`: the router decides, and the request must NOT name a specific provider model, or every trace will be labelled with a model that never ran. Only a project whose routers were all deleted honors an explicit `model` (as a plain metered proxy).
 
 ```ts
 const client = new openai.OpenAI({
@@ -142,8 +142,7 @@ const client = new openai.OpenAI({
 });
 
 const res = await client.chat.completions.create({
-  // Your usual model; a configured router overrides it.
-  model: "openai/gpt-4o-mini",
+  model: "auto", // the router picks; never hard-code a provider model here
   messages,
 });
 ```
