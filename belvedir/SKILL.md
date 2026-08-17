@@ -133,7 +133,7 @@ Both context managers propagate across `await` boundaries, so they work inside `
 
 ## Route inference through Belvedir
 
-Belvedir can also EXECUTE the app's LLM calls: point any OpenAI-compatible client at the router endpoint and swap the provider key for the Belvedir key. Two lines change; the client is used exactly as before. Every project starts with a router (editable on the platform's Routing page), so Belvedir picks the model per request — including the project's fine-tuned models — runs the call, and bills the organization at cost. Pass `model: "auto"`: the router decides, and the request must NOT name a specific provider model, or every trace will be labelled with a model that never ran. Only a project whose routers were all deleted honors an explicit `model` (as a plain metered proxy).
+Belvedir can also EXECUTE the app's LLM calls: point any OpenAI-compatible client at the router endpoint and swap the provider key for the Belvedir key. Two lines change; the client is used exactly as before. Every project starts with a production router (editable on the platform's Routing page), so Belvedir picks the model per request — including the project's fine-tuned models — runs the call, and bills the organization at cost. The `model` field works two ways. `model: "auto"` (or omitting it): the production router decides. Naming a real model (say `x-ai/grok-4.6`): the call goes through a router anchored on that model, created on first use — the named model is the ceiling (Big) and the project's cheaper Medium/Small tiers serve the easier calls underneath it. So existing code that names Grok in one place and Fable in another keeps working and ends up with a router per model, each editable on the Routing page. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards an explicit `model` as-is (a plain metered proxy).
 
 ```ts
 const client = new openai.OpenAI({
@@ -142,7 +142,7 @@ const client = new openai.OpenAI({
 });
 
 const res = await client.chat.completions.create({
-  model: "auto", // the router picks; never hard-code a provider model here
+  model: "auto", // production router picks; a real model id = ceiling for the call
   messages,
 });
 ```
