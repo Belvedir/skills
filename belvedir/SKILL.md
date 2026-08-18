@@ -161,6 +161,7 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 - Pass the session id in an `x-session-id` header (or a `session_id` body field) to pin a conversation to one model.
 - Which model served the call comes back in the response's `model` and the `x-belvedir-model` header.
 - Keep the tracing `initialize()` from above: routed calls are traced like any other, which is what feeds tasks and training.
+- **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (≤1,000; each body names an `anthropic/*` or OpenAI model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` for one OpenAI-shaped chat.completion per custom_id. Use it for evals, classification, and backfills, not interactive calls.
 
 ## Configuration
 
