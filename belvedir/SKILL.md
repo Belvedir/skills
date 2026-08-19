@@ -165,7 +165,7 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 ```
 
 - Pass the session id in an `x-session-id` header (or a `session_id` body field) to pin a conversation to one model.
-- Which model served the call comes back in the response's `model` and the `x-belvedir-model` header; what it cost (USD, exactly what is billed) in `usage.cost` and the `x-belvedir-cost` header (streams: `usage.cost` on the final chunk).
+- Which model served the call comes back in the response's `model` and the `x-belvedir-model` header. Token counts are the standard OpenAI `usage` block (`prompt_tokens`, `completion_tokens`, `total_tokens`, plus provider details such as `prompt_tokens_details.cached_tokens`); what it cost (USD, exactly what is billed) is `usage.cost` and the `x-belvedir-cost` header. Streams carry the same `usage` (tokens + cost) on the final chunk; `include_usage` is turned on upstream for you.
 - Keep the tracing `initialize()` from above: routed calls are traced like any other, which is what feeds tasks and training.
 - **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (≤1,000; each body names an `anthropic/*`, OpenAI, or Sail-served model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers (half price) or Sail's deferred flex window; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` for one OpenAI-shaped chat.completion per custom_id. Use it for evals, classification, and backfills, not interactive calls.
 
