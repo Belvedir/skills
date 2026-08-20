@@ -133,7 +133,7 @@ Both context managers propagate across `await` boundaries, so they work inside `
 
 ## Route inference through Belvedir
 
-Belvedir also EXECUTES the app's LLM calls. Do this for EVERY LLM client in the codebase, one client at a time: keep the model each call site already names, and change only the endpoint and the key — base URL to Belvedir's router, provider key to the Belvedir key. Each model the app uses becomes its own baseline: if the app calls Grok 4.6 for one job and Claude Sonnet 5 for another, the Grok call sites become Belvedir calls with `model: "x-ai/grok-4.6"` and the Sonnet call sites become Belvedir calls with `model: "anthropic/claude-sonnet-5"` — two clients, two baselines, exactly as before. Do NOT rewrite model names to `"auto"`, do NOT consolidate different call sites onto one model, and do NOT pick a different model than the one the code used. Any OpenAI-compatible client works (openai SDK, Vercel AI SDK's OpenAI-compatible provider, raw fetch to `/chat/completions`). For a provider-native client (Anthropic SDK, xAI SDK, Google GenAI SDK) replace it with the OpenAI client pointed at Belvedir and carry the model over in Belvedir's provider-prefixed spelling: `claude-sonnet-5` → `anthropic/claude-sonnet-5`, `grok-4.6` → `x-ai/grok-4.6`, `gemini-2.5-pro` → `google/gemini-2.5-pro`; OpenAI ids stay bare (`gpt-4o-mini`). The router also normalizes bare ids server-side, so a missed one still routes, but write the prefixed form. Translate the request shape too (Anthropic `system`/`max_tokens` → the OpenAI-style `system` message / `max_tokens`; tool definitions to OpenAI `tools`) so behavior is unchanged.
+Belvedir also EXECUTES the app's LLM calls. Do this for EVERY LLM client in the codebase, one client at a time: keep the model each call site already names, and change only the endpoint and the key — base URL to Belvedir's router, provider key to the Belvedir key. Each model the app uses becomes its own baseline: if the app calls Grok 4.6 for one job and Claude Sonnet 5 for another, the Grok call sites become Belvedir calls with `model: "x-ai/grok-4.6"` and the Sonnet call sites become Belvedir calls with `model: "anthropic/claude-sonnet-5"` — two clients, two baselines, exactly as before. Do NOT rewrite model names to `"auto"`, do NOT consolidate different call sites onto one model, and do NOT pick a different model than the one the code used. Any OpenAI-compatible client works (openai SDK, Vercel AI SDK's OpenAI-compatible provider, raw fetch to `/chat/completions`). For a provider-native xAI or Google GenAI client, replace it with the OpenAI client pointed at Belvedir and carry the model over in Belvedir's provider-prefixed spelling: `grok-4.6` → `x-ai/grok-4.6`, `gemini-2.5-pro` → `google/gemini-2.5-pro`; OpenAI ids stay bare (`gpt-4o-mini`). The router also normalizes bare ids server-side, so a missed one still routes, but write the prefixed form. **Anthropic SDK call sites do NOT swap clients**: change only the base URL — `new Anthropic({ baseURL: "https://platform.belvedir.ai/api", apiKey: BELVEDIR_API_KEY })` — and the request passes through to the Messages API untranslated (`cache_control`, `thinking`, `anthropic-beta` headers, native streaming all intact). That passthrough surface is model-pinned (no `"auto"`); it serves Claude models exactly as Anthropic would. Only rewrite an Anthropic call site to the OpenAI client if the app wants that call ROUTED across tiers rather than pinned.
 
 What happens next: the first call naming a model creates a router anchored on it (Routing page, "From your code") with that model as the ceiling — it answers every conversational call (a person talking to the agent always gets the model the code named), while the project's cheaper Medium/Small tiers serve only easier machine-shaped tasks (classification, extraction, strict-format calls, tool loops) underneath — so the app runs on the models it chose but pays less when a smaller model is enough. Every project also has an auto router; `model: "auto"` hands a call to it outright, which is the opt-in path, not the migration. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards a named `model` as-is (a plain metered proxy).
 
@@ -149,10 +149,17 @@ const res = await client.chat.completions.create({
   messages,
 });
 
-// Before: new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }).messages.create({ model: "claude-sonnet-5", ... })
-const sonnet = await client.chat.completions.create({
-  model: "anthropic/claude-sonnet-5", // same model, Belvedir's spelling
-  messages, // Anthropic `system` becomes a { role: "system" } message
+// Anthropic SDK call sites keep the Anthropic SDK — only the base URL changes:
+// requests pass through to the Messages API untranslated (cache_control,
+// thinking, beta headers, native streaming intact). Model-pinned by design.
+const anthropic = new Anthropic({
+  baseURL: "https://platform.belvedir.ai/api", // SDK appends /v1/messages
+  apiKey: process.env.BELVEDIR_API_KEY, // was ANTHROPIC_API_KEY
+});
+const sonnet = await anthropic.messages.create({
+  model: "claude-sonnet-5", // unchanged
+  max_tokens: 16000,
+  messages,
 });
 ```
 
@@ -167,7 +174,8 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 - Pass the session id in an `x-session-id` header (or a `session_id` body field) to pin a conversation to one model.
 - Which model served the call comes back in the response's `model` and the `x-belvedir-model` header. Token counts are the standard OpenAI `usage` block (`prompt_tokens`, `completion_tokens`, `total_tokens`, plus provider details such as `prompt_tokens_details.cached_tokens`); what it cost (USD, exactly what is billed) is `usage.cost` and the `x-belvedir-cost` header. Streams carry the same `usage` (tokens + cost) on the final chunk; `include_usage` is turned on upstream for you.
 - Keep the tracing `initialize()` from above: routed calls are traced like any other, which is what feeds tasks and training.
-- **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (≤1,000; each body names an `anthropic/*`, OpenAI, or Sail-served model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers (half price) or Sail's deferred flex window; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` for one OpenAI-shaped chat.completion per custom_id. Use it for evals, classification, and backfills, not interactive calls.
+- **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (≤1,000; each body names an `anthropic/*`, OpenAI, or Sail-served model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers (half price) or Sail's deferred flex window; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` for one OpenAI-shaped chat.completion per custom_id. Anthropic-native code can send `{custom_id, params: <Messages API params>}` instead (Anthropic's own batch wire shape, forwarded verbatim; the result carries the native message). Use batches for evals, classification, and backfills, not interactive calls.
+- **Embeddings:** `POST /api/v1/route/embeddings` is OpenAI-compatible (`text-embedding-3-small`/`-3-large`/`-ada-002`) — same base URL and key.
 
 ## Configuration
 
