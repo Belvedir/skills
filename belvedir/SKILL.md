@@ -180,9 +180,24 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 
 ## Verify the integration
 
-1. Run traced work inside a session, then flush.
-2. Traces appear on the dashboard (Data → Conversations) within seconds.
-3. Tasks and groups form **~30 seconds after the session goes quiet**; don't debug earlier than that.
+Verify whichever halves you set up.
+
+**Tracing:**
+1. Run traced work inside a session, then `flush()`.
+2. Raw spans show under Data → Traces immediately; the linked conversation appears under Data → Conversations within seconds.
+3. Tasks and groups form **~30 seconds after the session goes quiet** — don't debug earlier than that.
+
+**Inference:** make one routed call and confirm it came back through Belvedir. Use a model the app actually calls (this also creates that model's router, so don't test with a model you won't use):
+1. The response is a normal chat.completion (HTTP 200) and the `x-belvedir-model` response header names the model that served it (with `x-belvedir-cost`, the USD billed). Quick check from the shell:
+   ```bash
+   curl -sD - -o /dev/null https://platform.belvedir.ai/api/v1/route/chat/completions \
+     -H "Authorization: Bearer $BELVEDIR_API_KEY" -H "Content-Type: application/json" \
+     -d '{"model":"anthropic/claude-sonnet-5","messages":[{"role":"user","content":"ping"}]}' \
+     | grep -i '^x-belvedir-'
+   ```
+   From an SDK, read the same `x-belvedir-model` header off the response object.
+2. On the dashboard the model you named shows on the **Routing** page as an anchored router ("From your code"), and the call appears on the project's **Usage** page.
+3. Read errors, don't guess: a `400 … isn't a priced model` means that model id has no Belvedir rate (fix the id — it may not be offered), and a `402` means the organization is out of credits (add credits on the Billing page). Neither is a code bug.
 
 ## Common issues
 
