@@ -63,6 +63,27 @@ initialize({
 });
 ```
 
+### AI SDK codebases (the `ai` package)
+
+If the app makes its LLM calls with the AI SDK (`generateText`/`streamText`/`useChat`), one rule decides whether anything is captured: **the calls must go through `@ai-sdk/openai-compatible`**. Its native provider packages and built-in gateway routing use protocols Belvedir doesn't instrument and produce NO LLM spans, with no warning: `@ai-sdk/openai` (Responses API), `@ai-sdk/anthropic` (Messages API), and plain `"provider/model"` model strings (Vercel AI Gateway protocol). Swap those call sites to `createOpenAICompatible` pointed at the same destination (the provider's OpenAI-compatible URL, the gateway's `https://ai-gateway.vercel.sh/v1`, or Belvedir's router per the inference section below) and keep each call site's model. No `instrumentModules` entry is needed for the `ai` package itself — capture happens at the HTTP layer — but `initialize()` must still run first (in ESM, import `ai` dynamically after it; in Next.js, initialize from `instrumentation.ts`):
+
+```ts
+import { initialize } from "belvedir";
+initialize({ apiKey: process.env.BELVEDIR_API_KEY!, appName: "my-agent" });
+
+const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
+const { generateText } = await import("ai");
+
+const llm = createOpenAICompatible({
+  name: "belvedir",
+  baseURL: "https://platform.belvedir.ai/api/v1/route",
+  apiKey: process.env.BELVEDIR_API_KEY,
+});
+const { text } = await generateText({ model: llm("anthropic/claude-sonnet-5"), prompt });
+```
+
+Streamed calls (`streamText`) are captured too, final completion included. Sessions, tasks, flush, and outcomes below all apply unchanged.
+
 ### Sessions and tasks (required for tasks and training sets)
 
 Wrap each agent run in `withSession` so every LLM and tool span links under one session id. Optionally wrap distinct units of work in `task()` for sharper task boundaries:
@@ -217,6 +238,7 @@ Verify whichever halves you set up.
 - **No spans at all**: wrong `baseUrl` (silent 404), `initialize()` ran after the LLM SDK was imported (Node logs a late-init warning), an ESM entry point without `instrumentModules` (no warning — the require hook never sees ESM imports), or the route runs on the Edge runtime.
 - **`initialize() failed` warning mentioning `parseKeyPairsIntoRecord`** (Node): a known dependency conflict in `belvedir@0.3.1`. Upgrade: `npm install belvedir@latest` (fixed in 0.3.2).
 - **Conversations captured but a streamed final assistant reply is missing**: the app calls an OpenAI-compatible endpoint with raw HTTP and `stream: true` on an SDK older than `belvedir@0.4.0` (Node) / `belvedir==0.6.0` (Python). Upgrade; the raw-HTTP instrumentation records streamed completions.
+- **AI SDK app (`ai` package) produces no LLM spans**: the calls use `@ai-sdk/openai` (Responses API), `@ai-sdk/anthropic`, or plain `"provider/model"` gateway strings — none are instrumented. Swap those call sites to `@ai-sdk/openai-compatible` (see the AI SDK section above).
 - **Ingest or the router returns 402/429**: not a code bug. 402 from the router = the organization is out of credits (add credits, or turn on Auto refill — off by default — under Organization Settings → Billing); 402 from ingest = the project has no organization. 429 = per-key rate limit (ingest 2 req/s sustained, burst 120; router 25 req/s, burst 300): honor `Retry-After`.
 - **Traces arrive but no tasks or training sets form**: work isn't wrapped in `withSession`/`session`, or the session hasn't been quiet for ~30s yet.
 - **`reportOutcome` returns false / 404**: the session hasn't been ingested yet: `flush()` first, then retry.
