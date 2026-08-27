@@ -1,6 +1,6 @@
 ---
 name: belvedir
-description: Instrument an AI agent with Belvedir observability: install the Belvedir SDK (Node or Python), wrap runs in sessions and tasks, flush spans, and report outcomes. Use when connecting an app to Belvedir or debugging missing traces, tasks, or groups.
+description: Instrument an AI agent with Belvedir observability: install the Belvedir SDK (Node or Python), wrap runs in sessions and tasks, flush spans, and report outcomes. Use when connecting an app to Belvedir or debugging missing traces, tasks, or training sets.
 ---
 
 # Belvedir integration
@@ -11,7 +11,7 @@ description: Instrument an AI agent with Belvedir observability: install the Bel
 > mkdir -p .claude/skills/belvedir && curl -fsSL https://raw.githubusercontent.com/Belvedir/skills/main/belvedir/SKILL.md -o .claude/skills/belvedir/SKILL.md
 > ```
 
-Belvedir is an observability and self-improvement platform for AI agents. The loop SDK exports an OpenTelemetry span for every LLM call; Belvedir links spans into **sessions**, segments each session into the **tasks** the agent performed, and clusters similar tasks into **groups**. Groups feed the improvement loops (prompt/harness optimization, fine-tuning), so instrumentation quality directly determines improvement quality.
+Belvedir is an observability and self-improvement platform for AI agents. The loop SDK exports an OpenTelemetry span for every LLM call; Belvedir links spans into **sessions**, segments each session into the **tasks** the agent performed, and gathers similar tasks into **training sets**. Training sets feed the improvement loops (prompt/harness optimization, fine-tuning), so instrumentation quality directly determines improvement quality.
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ initialize({
 });
 ```
 
-### Sessions and tasks (required for Tasks & Groups)
+### Sessions and tasks (required for tasks and training sets)
 
 Wrap each agent run in `withSession` so every LLM and tool span links under one session id. Optionally wrap distinct units of work in `task()` for sharper task boundaries:
 
@@ -135,7 +135,7 @@ Both context managers propagate across `await` boundaries, so they work inside `
 
 Belvedir also EXECUTES the app's LLM calls. Do this for EVERY LLM client in the codebase, one client at a time: keep the model each call site already names, and change only the endpoint and the key — base URL to Belvedir's router, provider key to the Belvedir key. Each model the app uses becomes its own baseline: if the app calls Grok 4.6 for one job and Claude Sonnet 5 for another, the Grok call sites become Belvedir calls with `model: "x-ai/grok-4.6"` and the Sonnet call sites become Belvedir calls with `model: "anthropic/claude-sonnet-5"` — two clients, two baselines, exactly as before. Do NOT rewrite model names to `"auto"`, do NOT consolidate different call sites onto one model, and do NOT pick a different model than the one the code used. Any OpenAI-compatible client works (openai SDK, Vercel AI SDK's OpenAI-compatible provider, raw fetch to `/chat/completions`). For a provider-native xAI or Google GenAI client, replace it with the OpenAI client pointed at Belvedir and carry the model over in Belvedir's provider-prefixed spelling: `grok-4.6` → `x-ai/grok-4.6`, `gemini-2.5-pro` → `google/gemini-2.5-pro`; OpenAI ids stay bare (`gpt-4o-mini`). The router also normalizes bare ids server-side, so a missed one still routes, but write the prefixed form. **Anthropic SDK call sites do NOT swap clients**: change only the base URL — `new Anthropic({ baseURL: "https://platform.belvedir.ai/api", apiKey: BELVEDIR_API_KEY })` — and the request passes through to the Messages API untranslated (`cache_control`, `thinking`, `anthropic-beta` headers, native streaming all intact). That passthrough surface is model-pinned (no `"auto"`); it serves Claude models exactly as Anthropic would. Only rewrite an Anthropic call site to the OpenAI client if the app wants that call ROUTED across tiers rather than pinned.
 
-What happens next: the first call naming a model creates a router anchored on it (Routing page, "From your code") with that model as the ceiling — it answers every conversational call (a person talking to the agent always gets the model the code named), while the project's cheaper Medium/Small tiers serve only easier machine-shaped tasks (classification, extraction, strict-format calls, tool loops) underneath — so the app runs on the models it chose but pays less when a smaller model is enough. Every project also has an auto router; `model: "auto"` hands a call to it outright, which is the opt-in path, not the migration. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards a named `model` as-is (a plain metered proxy).
+What happens next: the first call naming a model creates a router anchored on it (Routers page, "From your code") with that model as the ceiling — it answers every conversational call (a person talking to the agent always gets the model the code named), while the project's cheaper Medium/Small tiers serve only easier machine-shaped tasks (classification, extraction, strict-format calls, tool loops) underneath — so the app runs on the models it chose but pays less when a smaller model is enough. Every project also has an auto router; `model: "auto"` hands a call to it outright, which is the opt-in path, not the migration. Which model actually ran comes back in the response's `model` and the `x-belvedir-model` header. Only a project whose routers were all deleted forwards a named `model` as-is (a plain metered proxy). The tiering itself is the project's **Smart routing** permission (on by default); with it off, every call serves exactly the model it names.
 
 ```ts
 // Before: new OpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey: process.env.OPENROUTER_API_KEY })
@@ -174,7 +174,7 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 - Pass the session id in an `x-session-id` header (or a `session_id` body field) to pin a conversation to one model.
 - Which model served the call comes back in the response's `model` and the `x-belvedir-model` header. Token counts are the standard OpenAI `usage` block (`prompt_tokens`, `completion_tokens`, `total_tokens`, plus provider details such as `prompt_tokens_details.cached_tokens`); what it cost (USD, exactly what is billed) is `usage.cost` and the `x-belvedir-cost` header. Streams carry the same `usage` (tokens + cost) on the final chunk; `include_usage` is turned on upstream for you.
 - Keep the tracing `initialize()` from above: routed calls are traced like any other, which is what feeds tasks and training.
-- **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (up to 100,000 Anthropic / 50,000 OpenAI / 1,000 Sail requests per batch; each body names an `anthropic/*`, OpenAI, or Sail-served model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers (half price) or Sail's deferred flex window; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` — JSONL by default, one result per custom_id per line (`?format=anthropic` / `?format=openai` return the provider's exact results format for single-dialect batches, so migrated parsers run unchanged; `?format=json` returns one envelope). Code using the Anthropic SDK's batch methods needs NO endpoint changes at all: `client.messages.batches.create/retrieve/results/cancel/list/delete` work against the same base URL (`https://platform.belvedir.ai/api`) via the Anthropic-compatible facade at `/api/v1/messages/batches`. SDK batch creates over ~4 MB: use base URL `https://web-18927-96902dd0-7nu4yp6c.onporter.run` (identical API, 256 MB inline). Anthropic-native code can send `{custom_id, params: <Messages API params>}` instead (Anthropic's own batch wire shape, forwarded verbatim; the result carries the native message). Cancel in flight with `POST /api/v1/route/batches/{id}/cancel` (completed requests still return and bill; the rest come back `canceled`). Pass a top-level `idempotency_key` so a retried submission returns the existing batch instead of creating a second one. Inline bodies over ~4 MB are rejected at the platform edge — bigger submissions upload first: `POST /api/v1/route/batches/uploads` → PUT the submission JSON to the returned `upload_url` → submit `{input_object}`. Use batches for evals, classification, and backfills, not interactive calls.
+- **Batch inference (offline work, half price):** `POST /api/v1/route/batches` with `{requests: [{custom_id, body: <chat-completions body>}]}` (up to 100,000 Anthropic / 50,000 OpenAI requests per batch; the Sail portion caps at 1,000 requests and ~2 MB serialized; each body names an `anthropic/*`, OpenAI, or Sail-served model, never `"auto"`) submits to Anthropic's/OpenAI's batch tiers (half price) or Sail's deferred flex window; poll `GET /api/v1/route/batches/{id}` until `status: "ended"`, then `GET .../results` — JSONL by default, one result per custom_id per line (`?format=anthropic` / `?format=openai` return the provider's exact results format for single-dialect batches, so migrated parsers run unchanged; `?format=json` returns one envelope). Code using the Anthropic SDK's batch methods needs NO endpoint changes at all: `client.messages.batches.create/retrieve/results/cancel/list/delete` work against the same base URL (`https://platform.belvedir.ai/api`) via the Anthropic-compatible facade at `/api/v1/messages/batches`. SDK batch creates over ~4 MB: use base URL `https://web-18927-96902dd0-7nu4yp6c.onporter.run` (identical API, 256 MB inline). Anthropic-native code can send `{custom_id, params: <Messages API params>}` instead (Anthropic's own batch wire shape, forwarded verbatim; the result carries the native message). Cancel in flight with `POST /api/v1/route/batches/{id}/cancel` (completed requests still return and bill; the rest come back `canceled`). On `POST /api/v1/route/batches` submissions, pass a top-level `idempotency_key` so a retried submission returns the existing batch instead of creating a second one (the Anthropic SDK facade's `batches.create` doesn't carry one). Inline bodies over ~4 MB are rejected at the platform edge — bigger submissions upload first: `POST /api/v1/route/batches/uploads` → PUT the submission JSON to the returned `upload_url` → submit `{input_object}`. Use batches for evals, classification, and backfills, not interactive calls.
 - **Embeddings:** `POST /api/v1/route/embeddings` is OpenAI-compatible (`text-embedding-3-small`/`-3-large`/`-ada-002`) — same base URL and key.
 
 ## Configuration
@@ -185,6 +185,8 @@ res = client.chat.completions.create(model="x-ai/grok-4.6", messages=messages)  
 | `baseUrl` / `base_url` | `https://platform.belvedir.ai` | Must be a host that serves the ingest API; any other host 404s and spans drop silently |
 | `appName` / `app_name` | `belvedir-loop-app` | Your application name |
 | `disableBatch` / `disable_batch` | `false` | Export each span immediately instead of batching (useful for local testing) |
+| `instrumentModules` (Node only) | — | Your imported LLM SDKs, e.g. `{ openAI: openai.OpenAI, anthropic }`; patches them directly. Required in Next.js and every ESM/bundled environment |
+| `instrumentFetch` / `instrument_http` | `true` | Capture raw `fetch` / `requests` / `httpx` calls to OpenAI-compatible `chat/completions` endpoints, streams included (Node 0.4.0+, Python 0.6.0+); official-client requests are skipped so nothing double-counts. Set `false` to opt out |
 
 ## Verify the integration
 
@@ -193,7 +195,7 @@ Verify whichever halves you set up.
 **Tracing:**
 1. Run traced work inside a session, then `flush()`.
 2. Raw spans show under Data → Traces immediately; the linked conversation appears under Data → Conversations within seconds.
-3. Tasks and groups form **~30 seconds after the session goes quiet** — don't debug earlier than that.
+3. Tasks and training sets form **~30 seconds after the session goes quiet** — don't debug earlier than that.
 
 **Inference:** make one routed call and confirm it came back through Belvedir. Use a model the app actually calls (this also creates that model's router, so don't test with a model you won't use):
 1. The response is a normal chat.completion (HTTP 200) and the `x-belvedir-model` response header names the model that served it (with `x-belvedir-cost`, the USD billed). Quick check from the shell:
@@ -204,7 +206,7 @@ Verify whichever halves you set up.
      | grep -i '^x-belvedir-'
    ```
    From an SDK, read the same `x-belvedir-model` header off the response object.
-2. On the dashboard the model you named shows on the **Routing** page as an anchored router ("From your code"), and the call appears on the project's **Usage** page.
+2. On the dashboard the model you named shows on the **Routers** page as an anchored router ("From your code"), and the call appears on the project's **Usage** page.
 3. Read errors, don't guess: a `400 … isn't a priced model` means that model id has no Belvedir rate (fix the id — it may not be offered), and a `402` means the organization is out of credits (add credits on the Billing page). Neither is a code bug.
 
 ## Common issues
@@ -213,7 +215,9 @@ Verify whichever halves you set up.
 - **Spans appear locally but not in production**: the function exited before the batch flushed. `await flush()` before returning.
 - **No spans at all**: wrong `baseUrl` (silent 404), `initialize()` ran after the LLM SDK was imported (Node logs a late-init warning), an ESM entry point without `instrumentModules` (no warning — the require hook never sees ESM imports), or the route runs on the Edge runtime.
 - **`initialize() failed` warning mentioning `parseKeyPairsIntoRecord`** (Node): a known dependency conflict in `belvedir@0.3.1`. Upgrade: `npm install belvedir@latest` (fixed in 0.3.2).
-- **Traces arrive but no tasks or groups form**: work isn't wrapped in `withSession`/`session`, or the session hasn't been quiet for ~30s yet.
+- **Conversations captured but a streamed final assistant reply is missing**: the app calls an OpenAI-compatible endpoint with raw HTTP and `stream: true` on an SDK older than `belvedir@0.4.0` (Node) / `belvedir==0.6.0` (Python). Upgrade; the raw-HTTP instrumentation records streamed completions.
+- **Ingest or the router returns 402/429**: not a code bug. 402 from the router = the organization is out of credits (add credits, or turn on Auto refill — off by default — under Organization Settings → Billing); 402 from ingest = the project has no organization. 429 = per-key rate limit (ingest 2 req/s sustained, burst 120; router 25 req/s, burst 300): honor `Retry-After`.
+- **Traces arrive but no tasks or training sets form**: work isn't wrapped in `withSession`/`session`, or the session hasn't been quiet for ~30s yet.
 - **`reportOutcome` returns false / 404**: the session hasn't been ingested yet: `flush()` first, then retry.
 
 Full docs: https://docs.belvedir.ai
