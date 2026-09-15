@@ -1,6 +1,6 @@
 ---
 name: belvedir
-description: Instrument an AI agent with Belvedir observability: install the Belvedir SDK (Node or Python), wrap runs in sessions and tasks, flush spans, and report outcomes. Use when connecting an app to Belvedir or debugging missing traces, tasks, or training sets.
+description: Instrument an AI agent with Belvedir observability: install the Belvedir SDK (Node or Python), wrap runs in sessions and tasks, flush spans, and report outcomes. Use when connecting an app to Belvedir or debugging missing traces, tasks, or task groups.
 ---
 
 # Belvedir integration
@@ -11,7 +11,7 @@ description: Instrument an AI agent with Belvedir observability: install the Bel
 > mkdir -p .claude/skills/belvedir && curl -fsSL https://raw.githubusercontent.com/Belvedir/skills/main/belvedir/SKILL.md -o .claude/skills/belvedir/SKILL.md
 > ```
 
-Belvedir is an observability and self-improvement platform for AI agents. The loop SDK exports an OpenTelemetry span for every LLM call; Belvedir links spans into **sessions**, segments each session into the **tasks** the agent performed, and gathers similar tasks into **training sets**. Training sets feed the improvement loops (prompt/harness optimization, fine-tuning), so instrumentation quality directly determines improvement quality.
+Belvedir is an observability and self-improvement platform for AI agents. The loop SDK exports an OpenTelemetry span for every LLM call; Belvedir links spans into **sessions**, segments each session into the **tasks** the agent performed, and gathers similar tasks into **task groups**. Task groups feed the improvement loops (prompt/harness optimization, fine-tuning), so instrumentation quality directly determines improvement quality.
 
 ## Prerequisites
 
@@ -88,7 +88,7 @@ const { text } = await generateText({ model: llm("anthropic/claude-sonnet-5"), p
 
 Streamed calls (`streamText`) are captured too, final completion included. Sessions, tasks, flush, and outcomes below all apply unchanged.
 
-### Sessions and tasks (required for tasks and training sets)
+### Sessions and tasks (required for tasks and task groups)
 
 Wrap each agent run in `withSession` so every LLM and tool span links under one session id. Optionally wrap distinct units of work in `task()` for sharper task boundaries:
 
@@ -223,7 +223,7 @@ Verify whichever halves you set up.
 **Tracing:**
 1. Run traced work inside a session, then `flush()`.
 2. Raw spans show under Data → Traces immediately; the linked conversation appears under Data → Conversations within seconds.
-3. Tasks and training sets form **~30 seconds after the session goes quiet**; don't debug earlier than that.
+3. Tasks and task groups form **~30 seconds after the session goes quiet**; don't debug earlier than that.
 
 **Inference:** make one routed call and confirm it came back through Belvedir. Use a model the app actually calls (this also creates that model's router, so don't test with a model you won't use):
 1. The response is a normal chat.completion (HTTP 200) and the `x-belvedir-model` response header names the model that served it (with `x-belvedir-cost`, the USD billed). Quick check from the shell:
@@ -248,7 +248,7 @@ Verify whichever halves you set up.
 - **AI SDK app (`ai` package) produces no LLM spans**: the calls use `@ai-sdk/openai` (Responses API), `@ai-sdk/anthropic`, or plain `"provider/model"` gateway strings; none are instrumented. Swap those call sites to `@ai-sdk/openai-compatible` (see the AI SDK section above).
 - **Ingest or the router returns 402/429**: not a code bug. 402 from the router = the organization is out of credits (add credits, or turn on **Auto reload** (off by default) under Organization Settings → Billing); 402 from ingest = the project has no organization. 429 = per-key rate limit (ingest 2 req/s sustained, burst 120; router 25 req/s, burst 300): honor `Retry-After`.
 - **Worker or thread spans missing, or arrive session-less**: `initialize()` is per process (a queue worker or forked child never inherits it, and `flush()` there silently no-ops), and the session context never crosses a thread/process/queue boundary. Initialize at worker startup, pass the session id in the job payload, and re-open `session(session_id=...)` inside the worker.
-- **Traces arrive but no tasks or training sets form**: work isn't wrapped in `withSession`/`session`, or the session hasn't been quiet for ~30s yet.
+- **Traces arrive but no tasks or task groups form**: work isn't wrapped in `withSession`/`session`, or the session hasn't been quiet for ~30s yet.
 - **`withSession("id", fn)` had no effect** (Node): before `belvedir@0.3.1` the string form was silently ignored (spans arrive session-less, no tasks form, `reportOutcome` 404s). Upgrade, or pass `{ sessionId }`.
 - **`reportOutcome` returns false / 404**: the session hasn't been ingested yet: `flush()` first, then retry.
 - **Traces missing in development**: `BELVEDIR_API_KEY` is unset, or `initialize()` ran after an LLM client was created. Check the terminal for SDK warnings at startup.
